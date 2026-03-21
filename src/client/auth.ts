@@ -6,7 +6,7 @@ import type { QBCredentials, CredentialProvider } from "../credentials/index.js"
 import { refreshAccessToken } from "../credentials/oauth-client.js";
 import { promisify } from "./promisify.js";
 import { clearLookupCache } from "./cache.js";
-import { isQBError, extractQBErrorInfo } from "../types/index.js";
+import { isQBError, extractQBErrorInfo, isRefreshTokenError, isInvalidGrantError, isCSRFError } from "../types/index.js";
 
 // Sandbox mode for development/testing
 const useSandbox = process.env.QBO_SANDBOX === "true";
@@ -29,14 +29,27 @@ export function clearCredentialsCache(): void {
   clearLookupCache();
 }
 
-// Check if error is an authentication failure
+// Check if error is an authentication failure (expired access token, 401, etc.)
 export function isAuthError(error: unknown): boolean {
   if (isQBError(error)) {
     const { code } = extractQBErrorInfo(error);
     return code === '3200' || code === '401';
   }
+  // Also check for OAuth-level auth errors (invalid_grant, expired refresh token)
+  if (isInvalidGrantError(error) || isRefreshTokenError(error)) {
+    return true;
+  }
   return false;
 }
+
+// Check if the error specifically means the refresh token is expired/revoked
+// (requires full re-authentication, not just a retry)
+export function isReauthRequired(error: unknown): boolean {
+  return isRefreshTokenError(error) || isInvalidGrantError(error);
+}
+
+// Check if the error is a CSRF/state mismatch during OAuth flow
+export { isCSRFError } from "../types/index.js";
 
 // Initialize or refresh the QuickBooks session
 export async function getClient(): Promise<QuickBooks> {
@@ -93,12 +106,31 @@ export async function getClient(): Promise<QuickBooks> {
     credentials.refresh_token = tokenInfo.refresh_token;
     await provider.saveCredentials(credentials);
   } catch (refreshError) {
+    // Check if this is an expired/revoked refresh token (requires full re-auth)
+    if (isReauthRequired(refreshError)) {
+      clearCredentialsCache();
+      throw new Error(
+        "Your QuickBooks refresh token has expired or been revoked. " +
+        "Refresh tokens expire after 100 days of inactivity. " +
+        "Please run the qbo_authenticate tool to reconnect your QuickBooks account."
+      );
+    }
+
     // For local mode, try using intuit-oauth for refresh as a fallback
     if (isLocalMode()) {
       try {
         credentials = await refreshAccessToken(credentials);
         await provider.saveCredentials(credentials);
       } catch (fallbackError) {
+        // Check if the fallback also hit a refresh token expiry
+        if (isReauthRequired(fallbackError)) {
+          clearCredentialsCache();
+          throw new Error(
+            "Your QuickBooks refresh token has expired or been revoked. " +
+            "Refresh tokens expire after 100 days of inactivity. " +
+            "Please run the qbo_authenticate tool to reconnect your QuickBooks account."
+          );
+        }
         // If both methods fail, throw the original error
         throw refreshError;
       }

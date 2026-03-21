@@ -5,6 +5,8 @@ export {
   getClient,
   clearCredentialsCache,
   isAuthError,
+  isReauthRequired,
+  isCSRFError,
   getCompanyIdValue,
 } from './auth.js';
 export {

@@ -159,6 +159,52 @@ export interface QBReport {
   };
 }
 
+// OAuth/token error detection helpers
+// intuit-oauth and node-quickbooks throw various error formats for token issues
+
+/**
+ * Check if an error indicates an expired or invalid refresh token.
+ * This happens when the 100-day refresh token lifetime has elapsed,
+ * or when a refresh token has been revoked/invalidated.
+ */
+export function isRefreshTokenError(error: unknown): boolean {
+  const msg = getErrorString(error).toLowerCase();
+  return msg.includes('invalid_grant') ||
+    msg.includes('refresh token') && (msg.includes('expired') || msg.includes('invalid')) ||
+    msg.includes('token has been revoked') ||
+    msg.includes('token_expired');
+}
+
+/**
+ * Check if an error indicates an invalid grant (covers both access and refresh token issues).
+ */
+export function isInvalidGrantError(error: unknown): boolean {
+  const msg = getErrorString(error).toLowerCase();
+  return msg.includes('invalid_grant') || msg.includes('invalid grant');
+}
+
+/**
+ * Check if an error is a CSRF/state mismatch error from the OAuth flow.
+ */
+export function isCSRFError(error: unknown): boolean {
+  const msg = getErrorString(error).toLowerCase();
+  return msg.includes('csrf') ||
+    msg.includes('state mismatch') ||
+    msg.includes('state parameter');
+}
+
+/**
+ * Convert any error into a searchable string for pattern matching.
+ */
+function getErrorString(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (error instanceof Error) return `${error.message} ${error.name}`;
+  if (typeof error === 'object' && error !== null) {
+    try { return JSON.stringify(error); } catch { return String(error); }
+  }
+  return String(error);
+}
+
 export interface TransactionLine {
   date: string;
   type: string;

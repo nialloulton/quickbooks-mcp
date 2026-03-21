@@ -23,6 +23,18 @@ export const toolDefinitions = [
     },
   },
   {
+    name: "qbo_disconnect",
+    description: "Disconnect from QuickBooks by revoking the OAuth token and clearing local credentials. " +
+      "Use this to cleanly disconnect your app from a QuickBooks company. " +
+      "After disconnecting, run qbo_authenticate to reconnect. " +
+      "This tool only works when QBO_CREDENTIAL_MODE is 'local' (the default).",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: "get_company_info",
     description: "Get information about the connected QuickBooks company.",
     inputSchema: {

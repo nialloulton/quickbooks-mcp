@@ -1,7 +1,8 @@
 // Tool registry and dispatcher with auth retry
 
 import QuickBooks from "node-quickbooks";
-import { getClient, clearCredentialsCache, isAuthError } from "../client/index.js";
+import { getClient, clearCredentialsCache, isAuthError, isReauthRequired } from "../client/index.js";
+import { isCSRFError } from "../types/index.js";
 import {
   handleGetCompanyInfo,
   handleQuery,
@@ -37,6 +38,7 @@ import {
   handleEditCustomer,
   handleDeleteEntity,
   handleAuthenticate,
+  handleDisconnect,
 } from "./handlers/index.js";
 
 export { toolDefinitions } from "./definitions.js";
@@ -92,6 +94,11 @@ export async function executeTool(
     return handleAuthenticate(args as { authorization_code?: string; realm_id?: string });
   }
 
+  // Special case: qbo_disconnect doesn't need an active QuickBooks client
+  if (name === "qbo_disconnect") {
+    return handleDisconnect();
+  }
+
   const handler = toolHandlers.get(name);
   if (!handler) {
     throw new Error(`Unknown tool: ${name}`);
@@ -106,12 +113,47 @@ export async function executeTool(
   try {
     return await executeOperation();
   } catch (error) {
+    // Check for expired/revoked refresh token (requires full re-authentication)
+    if (isReauthRequired(error)) {
+      clearCredentialsCache();
+      return {
+        content: [{ type: "text", text:
+          `Your QuickBooks refresh token has expired or been revoked.\n\n` +
+          `Refresh tokens expire after 100 days of inactivity.\n\n` +
+          `Please run the \`qbo_authenticate\` tool to reconnect your QuickBooks account.`
+        }],
+        isError: true,
+      };
+    }
+
+    // Check for CSRF/state mismatch errors
+    if (isCSRFError(error)) {
+      return {
+        content: [{ type: "text", text:
+          `CSRF or state parameter mismatch detected during authentication.\n\n` +
+          `This can happen if the OAuth flow was interrupted or if there's a session mismatch.\n\n` +
+          `Please run the \`qbo_authenticate\` tool to start a fresh authentication flow.`
+        }],
+        isError: true,
+      };
+    }
+
     if (isAuthError(error)) {
-      // Clear cache and retry once with fresh credentials from Secrets Manager
+      // Clear cache and retry once with fresh credentials
       clearCredentialsCache();
       try {
         return await executeOperation();
       } catch (retryError) {
+        // Check if retry revealed an expired refresh token
+        if (isReauthRequired(retryError)) {
+          return {
+            content: [{ type: "text", text:
+              `Your QuickBooks refresh token has expired or been revoked.\n\n` +
+              `Please run the \`qbo_authenticate\` tool to reconnect your QuickBooks account.`
+            }],
+            isError: true,
+          };
+        }
         // If retry also fails, return that error
         const errorMessage = typeof retryError === 'object' && retryError !== null
           ? JSON.stringify(retryError, null, 2)

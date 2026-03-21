@@ -9,6 +9,92 @@ const PLAYGROUND_REDIRECT_URL = "https://developer.intuit.com/v2/OAuth2Playgroun
 // Required scopes for QuickBooks Online accounting access
 const REQUIRED_SCOPES = [OAuthClient.scopes.Accounting];
 
+// Intuit discovery document URLs
+const DISCOVERY_URLS = {
+  production: "https://developer.api.intuit.com/.well-known/openid-configuration",
+  sandbox: "https://sandbox-accounts.platform.intuit.com/.well-known/openid-configuration",
+};
+
+// Fallback revocation endpoints (used if discovery document is unavailable)
+const FALLBACK_REVOKE_URLS = {
+  production: "https://developer.api.intuit.com/v2/oauth2/tokens/revoke",
+  sandbox: "https://sandbox-accounts.platform.intuit.com/v2/oauth2/tokens/revoke",
+};
+
+// Cached discovery document
+let discoveryCache: { environment: string; document: DiscoveryDocument; fetchedAt: number } | null = null;
+const DISCOVERY_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+interface DiscoveryDocument {
+  authorization_endpoint: string;
+  token_endpoint: string;
+  revocation_endpoint: string;
+  userinfo_endpoint?: string;
+  issuer?: string;
+}
+
+/**
+ * Fetch the Intuit OpenID Connect discovery document.
+ * Caches for 24 hours per session.
+ */
+export async function getDiscoveryDocument(): Promise<DiscoveryDocument | null> {
+  const env = getEnvironment();
+
+  // Return cached if still valid
+  if (discoveryCache && discoveryCache.environment === env &&
+      Date.now() - discoveryCache.fetchedAt < DISCOVERY_CACHE_TTL) {
+    return discoveryCache.document;
+  }
+
+  try {
+    const response = await fetch(DISCOVERY_URLS[env]);
+    if (!response.ok) return null;
+    const doc = await response.json() as DiscoveryDocument;
+    discoveryCache = { environment: env, document: doc, fetchedAt: Date.now() };
+    return doc;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get the token revocation endpoint from the discovery document,
+ * falling back to the known endpoint if discovery fails.
+ */
+export async function getRevocationEndpoint(): Promise<string> {
+  const doc = await getDiscoveryDocument();
+  if (doc?.revocation_endpoint) return doc.revocation_endpoint;
+  return FALLBACK_REVOKE_URLS[getEnvironment()];
+}
+
+/**
+ * Revoke an OAuth token (access or refresh token).
+ * Uses the revocation endpoint from the discovery document.
+ */
+export async function revokeToken(
+  clientId: string,
+  clientSecret: string,
+  token: string,
+): Promise<void> {
+  const endpoint = await getRevocationEndpoint();
+  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Basic ${basicAuth}`,
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({ token }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Token revocation failed (${response.status}): ${body}`);
+  }
+}
+
 /**
  * Get the environment setting (sandbox or production)
  */
