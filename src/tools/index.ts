@@ -3,6 +3,7 @@
 import QuickBooks from "node-quickbooks";
 import { getClient, clearCredentialsCache, isAuthError, isReauthRequired } from "../client/index.js";
 import { isCSRFError } from "../types/index.js";
+import { logError, logApiCall, getLastIntuitTid } from "../utils/logger.js";
 import {
   handleGetCompanyInfo,
   handleQuery,
@@ -111,8 +112,12 @@ export async function executeTool(
 
   // Execute with retry on auth failure
   try {
-    return await executeOperation();
+    const result = await executeOperation();
+    logApiCall(name, getLastIntuitTid());
+    return result;
   } catch (error) {
+    logError(name, error, getLastIntuitTid());
+
     // Check for expired/revoked refresh token (requires full re-authentication)
     if (isReauthRequired(error)) {
       clearCredentialsCache();
@@ -144,6 +149,7 @@ export async function executeTool(
       try {
         return await executeOperation();
       } catch (retryError) {
+        logError(name, retryError, getLastIntuitTid());
         // Check if retry revealed an expired refresh token
         if (isReauthRequired(retryError)) {
           return {
@@ -174,8 +180,11 @@ export async function executeTool(
     } else {
       errorMessage = String(error);
     }
+
+    const tid = getLastIntuitTid();
+    const tidInfo = tid ? `\n\nintuit_tid: ${tid}` : '';
     return {
-      content: [{ type: "text", text: `Error: ${errorMessage}` }],
+      content: [{ type: "text", text: `Error: ${errorMessage}${tidInfo}\n\nFor support, visit: https://github.com/nialloulton/quickbooks-mcp/issues` }],
       isError: true,
     };
   }
