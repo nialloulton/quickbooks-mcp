@@ -374,3 +374,19 @@ Authorization codes are only valid for a few minutes. Start the OAuth flow again
 - Ensure `.env` file has `QBO_CREDENTIAL_MODE=aws`
 - Check your AWS credentials and permissions
 - Verify the secret and parameter names match your configuration
+
+## Support
+
+If you encounter issues:
+
+1. **Check the error message** — errors include the `intuit_tid` value which helps identify the exact API call that failed
+2. **Review the logs** — error details are stored in `~/.quickbooks-mcp/logs/quickbooks-mcp.log`
+3. **Open an issue** — visit [github.com/nialloulton/quickbooks-mcp/issues](https://github.com/nialloulton/quickbooks-mcp/issues) with:
+   - The error message and `intuit_tid` value
+   - The tool/action you were trying to use
+   - Your QuickBooks Online plan (Simple Start, Essentials, Plus, or Advanced)
+
+**Common error patterns:**
+- `refresh token has expired` — run `qbo_authenticate` to reconnect (tokens expire after 100 days)
+- `CSRF or state parameter mismatch` — run `qbo_authenticate` to start a fresh auth flow
+- `3200` or `401` errors — authentication issue, the app will auto-retry once then prompt you to reconnect
