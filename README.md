@@ -427,11 +427,13 @@ The server automatically refreshes OAuth tokens on each request and persists the
 ## Development
 
 ```bash
-npm run dev      # Run in development mode
-npm run build    # Build
-npm run typecheck # Type check
-npm test         # Run the test suite
+npm run dev           # Rebuild on changes
+npm run build         # Type-check and build the desktop server
+npm run test:desktop  # Focused tests used on pull requests
+npm test              # Full regression suite
 ```
+
+Each pull request runs one Windows job covering the desktop build, dependency audit, receipt workflows, credential storage, write retries and tool discovery. A new commit supersedes the previous PR run. To run the full suite, Lambda build and package check, select **Actions → Windows desktop CI → Run workflow**.
 
 Tests live in `tests/`, mirroring `src/`. They are TypeScript, compiled by
 `tsconfig.test.json` into `dist-test/` and run by Node's built-in test runner —

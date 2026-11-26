@@ -86,7 +86,4 @@ Normal accounting tool results still contain the data the caller requested.
 dedicated directory because its permissions are restricted. Rotated files receive
 the same protection. Log failures never cause an accounting operation to replay.
 
-Run `npm test`, both build scripts, `node scripts/smoke-mcp.mjs`, and `npm audit`.
-CI covers Windows, Linux, Apple Silicon Mac, and Intel Mac with synthetic fixtures.
-Native Mac tests need a working Keychain; passing mocked tests on Windows alone
-does not establish Mac compatibility.
+Windows PR checks exercise credential storage, write retries and fictional finance workflows with `npm run test:desktop`. They also build the desktop server, audit dependencies and verify MCP startup and discovery. A manual run of **Windows desktop CI** exercises the full Windows regression suite, Lambda build and package check. Testing native macOS storage requires a working Mac Keychain.

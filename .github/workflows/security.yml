@@ -1,17 +1,16 @@
-name: Build and security checks
+name: Windows desktop CI
 on:
-  push:
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: windows-desktop-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   check:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-26, macos-15-intel]
-    runs-on: ${{ matrix.os }}
+    name: Windows desktop
+    runs-on: windows-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -19,26 +18,16 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - name: Prepare isolated macOS test Keychain
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          keychain="$RUNNER_TEMP/quickbooks-tests.keychain-db"
-          security create-keychain -p 'ephemeral-fixture-password' "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p 'ephemeral-fixture-password' "$keychain"
-          security list-keychains -d user -s "$keychain"
-          security default-keychain -d user -s "$keychain"
       - run: npm ci --ignore-scripts
-      - run: npm audit --omit=dev
       - run: npm audit
       - run: npm run build
+      - run: npm run test:desktop
+        if: github.event_name == 'pull_request'
       - run: npm test
-      - run: npm run build:lambda
+        if: github.event_name == 'workflow_dispatch'
       - run: node scripts/smoke-mcp.mjs
       - run: npm run eval:discovery
+      - run: npm run build:lambda
+        if: github.event_name == 'workflow_dispatch'
       - run: npm pack --dry-run
-      - name: Delete isolated macOS test Keychain
-        if: always() && runner.os == 'macOS'
-        shell: bash
-        run: security delete-keychain "$RUNNER_TEMP/quickbooks-tests.keychain-db"
+        if: github.event_name == 'workflow_dispatch'

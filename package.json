@@ -23,6 +23,7 @@
   "scripts": {
     "build": "tsc",
     "eval:discovery": "node scripts/evaluate-discovery.mjs",
+    "test:desktop": "tsc -p tsconfig.test.json && node --enable-source-maps --test dist-test/tests/tools/finance-workflows.test.js dist-test/tests/tools/invoice-documents.test.js dist-test/tests/tools/auth-retry.test.js dist-test/tests/auth/secure-storage.test.js",
     "test": "tsc -p tsconfig.test.json && node --enable-source-maps --test \"dist-test/tests/**/*.test.js\"",
     "build:lambda": "node scripts/build-lambda.mjs",
     "security:migrate": "node scripts/migrate-security.mjs",

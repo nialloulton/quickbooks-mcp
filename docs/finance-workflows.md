@@ -17,7 +17,7 @@ Start by checking the company with `get_company_info`. The desktop connection ad
 
 ## Fictional evaluation
 
-Run `npm ci --ignore-scripts`, `npm run build`, `npm test`, `npm run build:lambda`, `node scripts/smoke-mcp.mjs` and `npm run eval:discovery`. The workflow suite passes MCP calls through the normal dispatcher into an in-memory company. Its client has no credentials, and its HTTP stub rejects any unrecognised route. Test uploads use invented bytes. The startup and search checks only initialise the server and list tools.
+To reproduce the Windows PR check, run `npm ci --ignore-scripts`, `npm audit`, `npm run build`, `npm run test:desktop`, `node scripts/smoke-mcp.mjs` and `npm run eval:discovery`. The workflow suite passes MCP calls through the normal dispatcher into an in-memory company. Its client has no credentials, and its HTTP stub rejects any unrecognised route. Test uploads use invented bytes. The startup and search checks only initialise the server and list tools.
 
 The discovery metric is the number of labelled requests whose expected tool appears in the first three title/description matches. Each line records the request, accepted tools, candidates and outcome. Pass an alternative built `dist/index.js` to the discovery script to compare revisions. These are development cases with a deterministic lexical ranker. A model choosing among the candidates, external email/calendar matching and an end-to-end Intuit sandbox exercise require separate evidence.
 
