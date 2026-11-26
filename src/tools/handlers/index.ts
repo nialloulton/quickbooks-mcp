@@ -8,6 +8,9 @@ export {
   handleGetBalanceSheet,
   handleGetTrialBalance,
 } from './reports.js';
+export { handleGetReport } from './report.js';
+export { handleReceivePayment } from './payment.js';
+export { handleCreateTransfer } from './transfer.js';
 export { handleQueryAccountTransactions } from './account-transactions.js';
 export { handleAccountPeriodSummary } from './account-period-summary.js';
 export {
@@ -18,10 +21,14 @@ export {
 export { handleCreateBill, handleGetBill, handleEditBill } from './bill.js';
 export { handleCreateExpense, handleGetExpense, handleEditExpense } from './expense.js';
 export { handleCreateSalesReceipt, handleGetSalesReceipt, handleEditSalesReceipt } from './sales-receipt.js';
+export { handleGetInvoicePdf } from './invoice-pdf.js';
+export { handleCreateReceiptAttachment, handleLinkReceiptAttachment } from './receipt-attachment.js';
 export { handleCreateInvoice, handleGetInvoice, handleEditInvoice } from './invoice.js';
 export { handleCreateDeposit, handleGetDeposit, handleEditDeposit } from './deposit.js';
 export { handleCreateVendorCredit, handleGetVendorCredit, handleEditVendorCredit } from './vendor-credit.js';
+export { handleCreateBillPayment, handleGetBillPayment } from './bill-payment.js';
 export { handleCreateCustomer, handleGetCustomer, handleEditCustomer } from './customer.js';
+export { handleCreateVendor, handleEditVendor } from './vendor.js';
 export { handleDeleteEntity } from './delete.js';
 export { handleAuthenticate } from './authenticate.js';
 export { handleDisconnect } from './disconnect.js';

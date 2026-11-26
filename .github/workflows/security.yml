@@ -1,0 +1,44 @@
+name: Build and security checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Prepare isolated macOS test Keychain
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/quickbooks-tests.keychain-db"
+          security create-keychain -p 'ephemeral-fixture-password' "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p 'ephemeral-fixture-password' "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -d user -s "$keychain"
+      - run: npm ci --ignore-scripts
+      - run: npm audit --omit=dev
+      - run: npm audit
+      - run: npm run build
+      - run: npm test
+      - run: npm run build:lambda
+      - run: node scripts/smoke-mcp.mjs
+      - run: npm run eval:discovery
+      - run: npm pack --dry-run
+      - name: Delete isolated macOS test Keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: security delete-keychain "$RUNNER_TEMP/quickbooks-tests.keychain-db"

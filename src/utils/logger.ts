@@ -1,126 +1,82 @@
-// Error and request logging for QuickBooks MCP server
-// Logs are stored in ~/.quickbooks-mcp/logs/ for troubleshooting
+import { AsyncLocalStorage } from "node:async_hooks";
+import { appendFileSync, existsSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { ensurePrivateDirectory, privateAtomicWrite, restrictPath } from "../credentials/secure-file.js";
+import { extractHttpStatus, extractQboFault } from "./errors.js";
+import { redactText } from "./redact.js";
+import { toolDefinitions } from "../tools/definitions.js";
 
-import * as fs from "fs";
-import * as path from "path";
-import * as os from "os";
+const requestContext = new AsyncLocalStorage<{ tid: string | null }>();
+const tools = new Set(toolDefinitions.map(t => t.name));
+const LOG_NAME = "quickbooks-mcp.log";
+const MAX_LOG_SIZE = 5 * 1024 * 1024;
+const readyDirectories = new Set<string>();
 
-const LOG_DIR = path.join(os.homedir(), ".quickbooks-mcp", "logs");
-const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB per log file
-const MAX_LOG_FILES = 5;
-
-let logReady = false;
-
-function ensureLogDir(): void {
-  if (logReady) return;
-  try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-    logReady = true;
-  } catch {
-    // If we can't create the log dir, logging is silently disabled
-  }
-}
-
-function getLogPath(): string {
-  return path.join(LOG_DIR, "quickbooks-mcp.log");
-}
-
-function rotateIfNeeded(): void {
-  const logPath = getLogPath();
-  try {
-    const stat = fs.statSync(logPath);
-    if (stat.size >= MAX_LOG_SIZE) {
-      // Rotate: shift existing files
-      for (let i = MAX_LOG_FILES - 1; i >= 1; i--) {
-        const from = `${logPath}.${i}`;
-        const to = `${logPath}.${i + 1}`;
-        try { fs.renameSync(from, to); } catch { /* ignore */ }
-      }
-      fs.renameSync(logPath, `${logPath}.1`);
-    }
-  } catch {
-    // File doesn't exist yet, no rotation needed
-  }
-}
-
-function writeLog(level: string, message: string, data?: Record<string, unknown>): void {
-  ensureLogDir();
-  if (!logReady) return;
-
-  rotateIfNeeded();
-
-  const timestamp = new Date().toISOString();
-  const entry: Record<string, unknown> = {
-    timestamp,
-    level,
-    message,
-    ...data,
-  };
-
-  try {
-    fs.appendFileSync(getLogPath(), JSON.stringify(entry) + "\n");
-  } catch {
-    // Logging should never crash the app
-  }
-}
-
-// Track the most recent intuit_tid for troubleshooting
-let lastIntuitTid: string | null = null;
-
-/**
- * Get the most recently captured intuit_tid value.
- */
-export function getLastIntuitTid(): string | null {
-  return lastIntuitTid;
-}
-
-/**
- * Record an intuit_tid from a QuickBooks API response header.
- */
+export function withLogContext<T>(work: () => T): T { return requestContext.run({ tid: null }, work); }
+export function getLastIntuitTid(): string | null { return requestContext.getStore()?.tid || null; }
 export function captureIntuitTid(tid: string): void {
-  lastIntuitTid = tid;
-  writeLog("info", "API response", { intuit_tid: tid });
+  const context = requestContext.getStore();
+  if (context && /^[a-z0-9-]{8,128}$/i.test(tid) && redactText(tid) === tid) context.tid = tid;
 }
 
-/**
- * Log an API error with full context for troubleshooting.
- */
-export function logError(
-  toolName: string,
-  error: unknown,
-  intuitTid?: string | null,
-): void {
-  const errorInfo: Record<string, unknown> = { tool: toolName };
+function directory(): string { return process.env.QBO_LOG_DIR || join(homedir(), ".quickbooks-mcp", "logs"); }
+export function getLogFilePath(): string { return join(directory(), LOG_NAME); }
 
-  if (intuitTid) {
-    errorInfo.intuit_tid = intuitTid;
-  }
-
-  if (error instanceof Error) {
-    errorInfo.error_message = error.message;
-    errorInfo.error_name = error.name;
-    errorInfo.stack = error.stack;
-  } else if (typeof error === "object" && error !== null) {
-    errorInfo.error = error;
-  } else {
-    errorInfo.error = String(error);
-  }
-
-  writeLog("error", `Tool ${toolName} failed`, errorInfo);
+/** An allowlist, not recursive redaction: legacy payloads never survive migration. */
+export function diagnosticMetadata(input: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (typeof input.timestamp === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(input.timestamp)) result.timestamp = input.timestamp;
+  if (typeof input.tool === "string" && tools.has(input.tool)) result.tool = input.tool;
+  if (input.outcome === "ok" || input.outcome === "failed") result.outcome = input.outcome;
+  else if (input.level === "error") result.outcome = "failed";
+  if (typeof input.status === "number" && Number.isInteger(input.status) && input.status >= 100 && input.status <= 599) result.status = input.status;
+  if (typeof input.fault_code === "string" && /^\d{1,6}$/.test(input.fault_code)) result.fault_code = input.fault_code;
+  if (typeof input.intuit_tid === "string" && /^[a-z0-9-]{8,128}$/i.test(input.intuit_tid) && redactText(input.intuit_tid) === input.intuit_tid) result.intuit_tid = input.intuit_tid;
+  return result;
 }
 
-/**
- * Log a successful API call.
- */
+export function migrateLogs(dir = directory()): void {
+  ensurePrivateDirectory(dir);
+  for (const name of readdirSync(dir)) {
+    if (!/^quickbooks-mcp\.log(?:\.\d+)?$/.test(name)) continue;
+    const path = join(dir, name);
+    restrictPath(path);
+    const lines = readFileSync(path, "utf8").split(/\r?\n/);
+    const sanitized: string[] = [];
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry && typeof entry === "object" && !Array.isArray(entry)) sanitized.push(JSON.stringify(diagnosticMetadata(entry)));
+      } catch { /* Discard unstructured legacy payloads. */ }
+    }
+    privateAtomicWrite(path, sanitized.length ? sanitized.join("\n") + "\n" : "");
+  }
+  readyDirectories.add(dir);
+}
+
+function writeLog(entry: Record<string, unknown>): void {
+  try {
+    const dir = directory();
+    if (!readyDirectories.has(dir)) migrateLogs(dir);
+    const path = join(dir, LOG_NAME);
+    if (existsSync(path) && statSync(path).size >= MAX_LOG_SIZE) {
+      for (let i = 4; i >= 1; i--) {
+        const from = path + "." + i;
+        const to = path + "." + (i + 1);
+        if (existsSync(from)) { if (existsSync(to)) unlinkSync(to); renameSync(from, to); }
+      }
+      if (existsSync(path + ".1")) unlinkSync(path + ".1");
+      renameSync(path, path + ".1");
+    }
+    if (!existsSync(path)) privateAtomicWrite(path, "");
+    appendFileSync(path, JSON.stringify(diagnosticMetadata({ timestamp: new Date().toISOString(), ...entry })) + "\n", { mode: 0o600 });
+  } catch { /* Diagnostic failures must not replay or fail an accounting write. */ }
+}
 export function logApiCall(toolName: string, intuitTid?: string | null): void {
-  const data: Record<string, unknown> = { tool: toolName };
-  if (intuitTid) data.intuit_tid = intuitTid;
-  writeLog("info", `Tool ${toolName} succeeded`, data);
+  writeLog({ tool: toolName, outcome: "ok", intuit_tid: intuitTid });
 }
-
-/**
- * Get the log file path (for sharing with support).
- */
-export function getLogFilePath(): string {
-  return getLogPath();
+export function logError(toolName: string, error: unknown, intuitTid?: string | null): void {
+  writeLog({ tool: toolName, outcome: "failed", status: extractHttpStatus(error), fault_code: extractQboFault(error)?.errors[0]?.code, intuit_tid: intuitTid });
 }

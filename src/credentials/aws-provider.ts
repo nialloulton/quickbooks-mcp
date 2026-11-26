@@ -1,3 +1,4 @@
+import { registerSecrets } from "../utils/redact.js";
 // AWS-based credential provider using Secrets Manager and SSM Parameter Store
 
 import {
@@ -35,7 +36,9 @@ export class AWSCredentialProvider implements CredentialProvider {
       throw new Error("Secret value is empty");
     }
 
-    return JSON.parse(response.SecretString) as QBCredentials;
+    const credentials = JSON.parse(response.SecretString) as QBCredentials;
+    registerSecrets(credentials.client_secret, credentials.access_token, credentials.refresh_token);
+    return credentials;
   }
 
   async saveCredentials(credentials: QBCredentials): Promise<void> {

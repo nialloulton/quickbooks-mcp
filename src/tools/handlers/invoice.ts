@@ -1,14 +1,17 @@
+import { formatCurrencyAmount } from "../../utils/money.js";
+import { getCustomerDetails } from "../../client/cache.js";
 // Handlers for invoice tools (create, get, edit)
 
 import QuickBooks from "node-quickbooks";
 import {
   promisify,
+  promisifyWrite,
   getAccountCache,
   getDepartmentCache,
   resolveItem,
   resolveCustomer,
 } from "../../client/index.js";
-import { validateAmount, toDollars, formatDollars, sumCents, outputReport } from "../../utils/index.js";
+import { buildQboUrl, validateAmount, toDollars, sumCents, outputReport, formatUpdateResult } from "../../utils/index.js";
 
 interface InvoiceLineChange {
   line_id?: string;
@@ -66,12 +69,9 @@ export async function handleCreateInvoice(
   if (!customer_id && !customer_name) {
     throw new Error("Either customer_name or customer_id is required for invoices");
   }
-  let customerRef: { value: string; name: string };
-  if (customer_id) {
-    customerRef = await resolveCustomer(client, customer_id);
-  } else {
-    customerRef = await resolveCustomer(client, customer_name!);
-  }
+  const customer = await getCustomerDetails(client, customer_id || customer_name!);
+  const customerRef = { value: customer.Id, name: customer.DisplayName };
+  const currency = customer.CurrencyRef?.value;
 
   // Resolve department (header-level, optional)
   let departmentRef: { value: string; name: string } | undefined;
@@ -194,11 +194,11 @@ export async function handleCreateInvoice(
       `Bill Email: ${bill_email || "(none)"}`,
       ...(allow_online_credit_card_payment !== undefined ? [`Online CC Payment: ${allow_online_credit_card_payment}`] : []),
       ...(allow_online_ach_payment !== undefined ? [`Online ACH Payment: ${allow_online_ach_payment}`] : []),
-      `Total: $${formatDollars(totalCents)}`,
+      `Total: ${formatCurrencyAmount(toDollars(totalCents), currency)}`,
       "",
       "Lines:",
       ...resolvedLines.map(l =>
-        `  ${l.itemRef.name}: Qty ${l.qty} × $${l.unitPriceDollars.toFixed(2)} = $${l.amountDollars.toFixed(2)}${l.description ? ` "${l.description}"` : ""}`
+        `  ${l.itemRef.name}: Qty ${l.qty} × ${formatCurrencyAmount(l.unitPriceDollars, currency)} = ${formatCurrencyAmount(l.amountDollars, currency)}${l.description ? ` "${l.description}"` : ""}`
       ),
       "",
       "Set draft=false to create this invoice.",
@@ -210,11 +210,11 @@ export async function handleCreateInvoice(
   }
 
   // Create the invoice
-  const result = await promisify<unknown>((cb) =>
+  const result = await promisifyWrite<unknown>((cb) =>
     client.createInvoice(invObject, cb)
-  ) as { Id: string; DocNumber?: string };
+  ) as { Id: string; DocNumber?: string; TotalAmt?: number; CurrencyRef?: { value: string } };
 
-  const qboUrl = `https://app.qbo.intuit.com/app/invoice?txnId=${result.Id}`;
+  const qboUrl = buildQboUrl("invoice", "txnId", result.Id);
 
   const response = [
     "Invoice Created!",
@@ -223,7 +223,7 @@ export async function handleCreateInvoice(
     `Ref no.: ${result.DocNumber || "(auto-assigned)"}`,
     `Date: ${txn_date}`,
     `Due Date: ${due_date || "(none)"}`,
-    `Total: $${formatDollars(totalCents)}`,
+    `Total: ${formatCurrencyAmount(result.TotalAmt ?? toDollars(totalCents), result.CurrencyRef?.value ?? currency)}`,
     "",
     `View in QuickBooks: ${qboUrl}`,
   ].join("\n");
@@ -245,6 +245,7 @@ export async function handleGetInvoice(
     Id: string;
     SyncToken: string;
     TxnDate: string;
+    CurrencyRef?: { value: string };
     DueDate?: string;
     DocNumber?: string;
     PrivateNote?: string;
@@ -274,7 +275,7 @@ export async function handleGetInvoice(
       };
     }>;
   };
-  const qboUrl = `https://app.qbo.intuit.com/app/invoice?txnId=${invoice.Id}`;
+  const qboUrl = buildQboUrl("invoice", "txnId", invoice.Id);
 
   // Format summary
   const lines: string[] = [
@@ -294,8 +295,8 @@ export async function handleGetInvoice(
     `Email Status: ${invoice.EmailStatus || '(none)'}`,
     `Online CC Payment: ${invoice.AllowOnlineCreditCardPayment ?? '(not set)'}`,
     `Online ACH Payment: ${invoice.AllowOnlineACHPayment ?? '(not set)'}`,
-    `Total: $${(invoice.TotalAmt || 0).toFixed(2)}`,
-    `Balance: $${(invoice.Balance || 0).toFixed(2)}`,
+    `Total: ${formatCurrencyAmount(invoice.TotalAmt || 0, invoice.CurrencyRef?.value)}`,
+    `Balance: ${formatCurrencyAmount(invoice.Balance || 0, invoice.CurrencyRef?.value)}`,
   ];
 
   if (invoice.LinkedTxn && invoice.LinkedTxn.length > 0) {
@@ -317,9 +318,9 @@ export async function handleGetInvoice(
       const unitPrice = detail.UnitPrice ?? line.Amount;
       const acctStr = detail.ItemAccountRef?.name ? ` → ${detail.ItemAccountRef.name}` : '';
       const descStr = line.Description ? ` "${line.Description}"` : '';
-      lines.push(`  Line ${line.Id}: ${itemName} (Qty: ${qty} × $${unitPrice.toFixed(2)}) = $${line.Amount.toFixed(2)}${acctStr}${descStr}`);
+      lines.push(`  Line ${line.Id}: ${itemName} (Qty: ${qty} × ${formatCurrencyAmount(unitPrice, invoice.CurrencyRef?.value)}) = ${formatCurrencyAmount(line.Amount, invoice.CurrencyRef?.value)}${acctStr}${descStr}`);
     } else if (line.DetailType === 'SubTotalLineDetail') {
-      lines.push(`  SubTotal: $${line.Amount.toFixed(2)}`);
+      lines.push(`  SubTotal: ${formatCurrencyAmount(line.Amount, invoice.CurrencyRef?.value)}`);
     }
   }
 
@@ -360,6 +361,7 @@ export async function handleEditInvoice(
     Id: string;
     SyncToken: string;
     TxnDate: string;
+    CurrencyRef?: { value: string };
     DueDate?: string;
     DocNumber?: string;
     PrivateNote?: string;
@@ -387,7 +389,7 @@ export async function handleEditInvoice(
   };
 
   // Determine if we're modifying lines - requires full update (not sparse)
-  const needsFullUpdate = lineChanges && lineChanges.length > 0;
+  const needsLineRebuild = lineChanges && lineChanges.length > 0;
 
   // Build updated Invoice
   const updated: Record<string, unknown> = {
@@ -395,36 +397,14 @@ export async function handleEditInvoice(
     SyncToken: current.SyncToken,
   };
 
-  if (!needsFullUpdate) {
-    updated.sparse = true;
-  } else {
-    updated.sparse = false;
-    updated.TxnDate = current.TxnDate;
-    updated.DueDate = current.DueDate;
-    updated.DocNumber = current.DocNumber;
-    updated.PrivateNote = current.PrivateNote;
-    if (current.CustomerRef) {
-      updated.CustomerRef = current.CustomerRef;
-    }
-    if (current.DepartmentRef) {
-      updated.DepartmentRef = current.DepartmentRef;
-    }
-    if (current.CustomerMemo) {
-      updated.CustomerMemo = current.CustomerMemo;
-    }
-    if (current.BillEmail) {
-      updated.BillEmail = current.BillEmail;
-    }
-    if (current.SalesTermRef) {
-      updated.SalesTermRef = current.SalesTermRef;
-    }
-    if (current.AllowOnlineCreditCardPayment !== undefined) {
-      updated.AllowOnlineCreditCardPayment = current.AllowOnlineCreditCardPayment;
-    }
-    if (current.AllowOnlineACHPayment !== undefined) {
-      updated.AllowOnlineACHPayment = current.AllowOnlineACHPayment;
-    }
-    // Copy lines and strip read-only fields
+  // Always sparse. A full update nulls every writable field absent from the
+  // payload, which is why this handler had grown a long copy list. Sparse also
+  // handles line changes, including deletion, provided the complete Line array
+  // is sent. See docs/quickbooks-api-limitations.md.
+  updated.sparse = true;
+
+  if (needsLineRebuild) {
+    // Seed with the existing lines, stripping read-only fields
     updated.Line = current.Line.map(line => {
       const { LineNum, ...rest } = line as Record<string, unknown>;
       return rest;
@@ -551,7 +531,7 @@ export async function handleEditInvoice(
     updated.Line = finalLines;
   }
 
-  const qboUrl = `https://app.qbo.intuit.com/app/invoice?txnId=${id}`;
+  const qboUrl = buildQboUrl("invoice", "txnId", id);
 
   if (draft) {
     const previewLines: string[] = [
@@ -591,7 +571,7 @@ export async function handleEditInvoice(
         if (detail) {
           const itemName = detail.ItemRef?.name || detail.ItemRef?.value || '(item)';
           const descStr = line.Description ? ` "${line.Description}"` : '';
-          previewLines.push(`  ${itemName}: $${line.Amount.toFixed(2)}${descStr}`);
+          previewLines.push(`  ${itemName}: ${formatCurrencyAmount(line.Amount, current.CurrencyRef?.value)}${descStr}`);
         }
       }
     }
@@ -604,11 +584,11 @@ export async function handleEditInvoice(
     };
   }
 
-  const result = await promisify<unknown>((cb) =>
+  const result = await promisifyWrite<unknown>((cb) =>
     client.updateInvoice(updated, cb)
   ) as { Id: string; SyncToken: string };
 
   return {
-    content: [{ type: "text", text: `Invoice ${id} updated successfully.\nNew SyncToken: ${result.SyncToken}\nView in QuickBooks: ${qboUrl}` }],
+    content: [{ type: "text", text: formatUpdateResult("Invoice", id, current.SyncToken, result.SyncToken, qboUrl) }],
   };
 }
