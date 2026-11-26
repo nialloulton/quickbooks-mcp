@@ -1,3 +1,4 @@
+import { formatCurrencyAmount } from "../utils/money.js";
 // Transaction line-item summaries for query results
 // Enhances text summaries with per-transaction line breakdowns
 
@@ -12,10 +13,6 @@ interface LineSummary {
   amount: number;
   label: string;       // account name, item name, etc.
   postingType?: string; // DR/CR for journal entries
-}
-
-function formatAmount(amount: number): string {
-  return `$${Math.abs(amount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function extractLineSummary(line: Record<string, unknown>): LineSummary | null {
@@ -67,6 +64,7 @@ function extractLineSummary(line: Record<string, unknown>): LineSummary | null {
 }
 
 function formatTransaction(entity: string, record: Record<string, unknown>): string {
+  const currency = (record.CurrencyRef as { value?: string } | undefined)?.value;
   const entityLower = entity.toLowerCase();
   const docNumber = record.DocNumber as string | undefined;
   const txnDate = record.TxnDate as string | undefined;
@@ -76,7 +74,7 @@ function formatTransaction(entity: string, record: Record<string, unknown>): str
   let header = entity;
   if (docNumber) header += ` #${docNumber}`;
   if (txnDate) header += ` (${txnDate})`;
-  header += ` ${formatAmount(totalAmt)}`;
+  header += ` ${formatCurrencyAmount(totalAmt, currency)}`;
 
   // Entity/vendor context
   const vendorRef = record.VendorRef as { name?: string } | undefined;
@@ -114,7 +112,7 @@ function formatTransaction(entity: string, record: Record<string, unknown>): str
 
   const subLines = summaries.map(s => {
     const prefix = isJournal && s.postingType ? `${s.postingType}  ` : "";
-    return `  ${prefix}${formatAmount(s.amount)}  ${s.label}`;
+    return `  ${prefix}${formatCurrencyAmount(Math.abs(s.amount), currency)}  ${s.label}`;
   });
 
   return [header, ...subLines].join("\n");

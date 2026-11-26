@@ -1,16 +1,27 @@
+import { redactText } from "../utils/redact.js";
 // Tool registry and dispatcher with auth retry
 
 import QuickBooks from "node-quickbooks";
-import { getClient, clearCredentialsCache, isAuthError, isReauthRequired } from "../client/index.js";
+import { getClient, rejectClient, clearCredentialsCache, isReauthRequired } from "../client/index.js";
 import { isCSRFError } from "../types/index.js";
-import { logError, logApiCall, getLastIntuitTid } from "../utils/logger.js";
+import { logError, logApiCall, getLastIntuitTid, withLogContext } from "../utils/logger.js";
+import { formatQboError } from "../utils/errors.js";
+import { runWithAuthRetry } from "./auth-retry.js";
+import { toolDefinitions as allToolDefinitions } from "./definitions.js";
+import { validateToolArguments, ToolArgumentError, type ToolSchema } from "./validate.js";
 import {
   handleGetCompanyInfo,
+  handleGetInvoicePdf,
+  handleCreateReceiptAttachment,
+  handleLinkReceiptAttachment,
   handleQuery,
   handleListAccounts,
   handleGetProfitLoss,
   handleGetBalanceSheet,
   handleGetTrialBalance,
+  handleGetReport,
+  handleReceivePayment,
+  handleCreateTransfer,
   handleQueryAccountTransactions,
   handleAccountPeriodSummary,
   handleCreateJournalEntry,
@@ -34,9 +45,13 @@ import {
   handleCreateVendorCredit,
   handleGetVendorCredit,
   handleEditVendorCredit,
+  handleCreateBillPayment,
+  handleGetBillPayment,
   handleCreateCustomer,
   handleGetCustomer,
   handleEditCustomer,
+  handleCreateVendor,
+  handleEditVendor,
   handleDeleteEntity,
   handleAuthenticate,
   handleDisconnect,
@@ -57,6 +72,9 @@ toolHandlers.set("list_accounts", (client, args) => handleListAccounts(client, a
 toolHandlers.set("get_profit_loss", (client, args) => handleGetProfitLoss(client, args as Parameters<typeof handleGetProfitLoss>[1]));
 toolHandlers.set("get_balance_sheet", (client, args) => handleGetBalanceSheet(client, args as Parameters<typeof handleGetBalanceSheet>[1]));
 toolHandlers.set("get_trial_balance", (client, args) => handleGetTrialBalance(client, args as Parameters<typeof handleGetTrialBalance>[1]));
+toolHandlers.set("get_report", (client, args) => handleGetReport(client, args as Parameters<typeof handleGetReport>[1]));
+toolHandlers.set("receive_payment", (client, args) => handleReceivePayment(client, args as Parameters<typeof handleReceivePayment>[1]));
+toolHandlers.set("create_transfer", (client, args) => handleCreateTransfer(client, args as Parameters<typeof handleCreateTransfer>[1]));
 toolHandlers.set("query_account_transactions", (client, args) => handleQueryAccountTransactions(client, args as Parameters<typeof handleQueryAccountTransactions>[1]));
 toolHandlers.set("account_period_summary", (client, args) => handleAccountPeriodSummary(client, args as Parameters<typeof handleAccountPeriodSummary>[1]));
 toolHandlers.set("create_journal_entry", (client, args) => handleCreateJournalEntry(client, args as Parameters<typeof handleCreateJournalEntry>[1]));
@@ -72,6 +90,9 @@ toolHandlers.set("create_sales_receipt", (client, args) => handleCreateSalesRece
 toolHandlers.set("get_sales_receipt", (client, args) => handleGetSalesReceipt(client, args as { id: string }));
 toolHandlers.set("edit_sales_receipt", (client, args) => handleEditSalesReceipt(client, args as Parameters<typeof handleEditSalesReceipt>[1]));
 toolHandlers.set("create_invoice", (client, args) => handleCreateInvoice(client, args as Parameters<typeof handleCreateInvoice>[1]));
+toolHandlers.set("get_invoice_pdf", (client, args) => handleGetInvoicePdf(client, args as Parameters<typeof handleGetInvoicePdf>[1]));
+toolHandlers.set("create_receipt_attachment", (client, args) => handleCreateReceiptAttachment(client, args as unknown as Parameters<typeof handleCreateReceiptAttachment>[1]));
+toolHandlers.set("link_receipt_attachment", (client, args) => handleLinkReceiptAttachment(client, args as unknown as Parameters<typeof handleLinkReceiptAttachment>[1]));
 toolHandlers.set("get_invoice", (client, args) => handleGetInvoice(client, args as { id: string }));
 toolHandlers.set("edit_invoice", (client, args) => handleEditInvoice(client, args as Parameters<typeof handleEditInvoice>[1]));
 toolHandlers.set("create_deposit", (client, args) => handleCreateDeposit(client, args as Parameters<typeof handleCreateDeposit>[1]));
@@ -80,19 +101,46 @@ toolHandlers.set("edit_deposit", (client, args) => handleEditDeposit(client, arg
 toolHandlers.set("create_vendor_credit", (client, args) => handleCreateVendorCredit(client, args as Parameters<typeof handleCreateVendorCredit>[1]));
 toolHandlers.set("get_vendor_credit", (client, args) => handleGetVendorCredit(client, args as { id: string }));
 toolHandlers.set("edit_vendor_credit", (client, args) => handleEditVendorCredit(client, args as Parameters<typeof handleEditVendorCredit>[1]));
+toolHandlers.set("create_bill_payment", (client, args) => handleCreateBillPayment(client, args as Parameters<typeof handleCreateBillPayment>[1]));
+toolHandlers.set("get_bill_payment", (client, args) => handleGetBillPayment(client, args as { id: string }));
 toolHandlers.set("create_customer", (client, args) => handleCreateCustomer(client, args as Parameters<typeof handleCreateCustomer>[1]));
 toolHandlers.set("get_customer", (client, args) => handleGetCustomer(client, args as { id: string }));
 toolHandlers.set("edit_customer", (client, args) => handleEditCustomer(client, args as Parameters<typeof handleEditCustomer>[1]));
+toolHandlers.set("create_vendor", (client, args) => handleCreateVendor(client, args as Parameters<typeof handleCreateVendor>[1]));
+toolHandlers.set("edit_vendor", (client, args) => handleEditVendor(client, args as Parameters<typeof handleEditVendor>[1]));
 toolHandlers.set("delete_entity", (client, args) => handleDeleteEntity(client, args as Parameters<typeof handleDeleteEntity>[1]));
 
+const schemasByTool = new Map<string, ToolSchema>(
+  allToolDefinitions.map((t) => [t.name, t.inputSchema as unknown as ToolSchema])
+);
+const callableNames = new Set([...toolHandlers.keys(), "qbo_authenticate", "qbo_disconnect"]);
+if (callableNames.size !== allToolDefinitions.length || [...callableNames].some(name => !schemasByTool.has(name))) {
+  throw new Error("QuickBooks tool definitions and callable handlers disagree.");
+}
+
 // Execute tool with auth retry logic
-export async function executeTool(
+async function executeToolInContext(
   name: string,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
+  // Enforce the advertised input schema before anything runs. The MCP server
+  // does not do this for us, and a silently-dropped argument is worse than a
+  // rejected call: the tool succeeds having done something else. See validate.ts.
+  try {
+    validateToolArguments(name, schemasByTool.get(name), args);
+  } catch (error) {
+    if (error instanceof ToolArgumentError) {
+      return {
+        content: [{ type: "text", text: `Invalid arguments: ${error.message}` }],
+        isError: true,
+      };
+    }
+    throw error;
+  }
+
   // Special case: qbo_authenticate doesn't need a QuickBooks client
   if (name === "qbo_authenticate") {
-    return handleAuthenticate(args as { authorization_code?: string; realm_id?: string });
+    return handleAuthenticate(args as { callback_url?: string });
   }
 
   // Special case: qbo_disconnect doesn't need an active QuickBooks client
@@ -105,87 +153,73 @@ export async function executeTool(
     throw new Error(`Unknown tool: ${name}`);
   }
 
+  let attemptedClient: QuickBooks | undefined;
   const executeOperation = async () => {
     const client = await getClient();
+    attemptedClient = client;
     return handler(client, args);
   };
 
-  // Execute with retry on auth failure
-  try {
-    const result = await executeOperation();
+  // Execute with retry on auth failure. The retry is conditional: it re-runs the
+  // whole handler, so it is only offered when the failed attempt is known not to
+  // have posted anything — see auth-retry.ts.
+  const outcome = await runWithAuthRetry(executeOperation, () => rejectClient(attemptedClient));
+  if (outcome.status === "ok") {
     logApiCall(name, getLastIntuitTid());
-    return result;
-  } catch (error) {
-    logError(name, error, getLastIntuitTid());
+    return outcome.value;
+  }
+  logError(name, outcome.error, getLastIntuitTid());
 
-    // Check for expired/revoked refresh token (requires full re-authentication)
-    if (isReauthRequired(error)) {
-      clearCredentialsCache();
-      return {
-        content: [{ type: "text", text:
-          `Your QuickBooks refresh token has expired or been revoked.\n\n` +
-          `Refresh tokens expire after 100 days of inactivity.\n\n` +
-          `Please run the \`qbo_authenticate\` tool to reconnect your QuickBooks account.`
-        }],
-        isError: true,
-      };
-    }
+  // formatQboError keeps QBO's Fault code/message/detail — an axios rejection
+  // reports only "Request failed with status code 400" on its own, which says
+  // nothing about which field QBO objected to.
+  let detail = formatQboError(outcome.error);
+  if (isReauthRequired(outcome.error)) {
+    clearCredentialsCache();
+    detail += "\n\nYour QuickBooks refresh token has expired or been revoked. Run the qbo_authenticate tool to reconnect your QuickBooks account.";
+  } else if (isCSRFError(outcome.error)) {
+    detail += "\n\nCSRF or state parameter mismatch detected. Run the qbo_authenticate tool to start a fresh authentication flow.";
+  }
+  const tid = getLastIntuitTid();
+  if (tid) detail += `\n\nintuit_tid: ${tid}`;
+  detail += "\n\nFor support, visit: https://github.com/nialloulton/quickbooks-mcp/issues";
 
-    // Check for CSRF/state mismatch errors
-    if (isCSRFError(error)) {
-      return {
-        content: [{ type: "text", text:
-          `CSRF or state parameter mismatch detected during authentication.\n\n` +
-          `This can happen if the OAuth flow was interrupted or if there's a session mismatch.\n\n` +
-          `Please run the \`qbo_authenticate\` tool to start a fresh authentication flow.`
-        }],
-        isError: true,
-      };
-    }
-
-    if (isAuthError(error)) {
-      // Clear cache and retry once with fresh credentials
-      clearCredentialsCache();
-      try {
-        return await executeOperation();
-      } catch (retryError) {
-        logError(name, retryError, getLastIntuitTid());
-        // Check if retry revealed an expired refresh token
-        if (isReauthRequired(retryError)) {
-          return {
-            content: [{ type: "text", text:
-              `Your QuickBooks refresh token has expired or been revoked.\n\n` +
-              `Please run the \`qbo_authenticate\` tool to reconnect your QuickBooks account.`
-            }],
-            isError: true,
-          };
-        }
-        // If retry also fails, return that error
-        const errorMessage = typeof retryError === 'object' && retryError !== null
-          ? JSON.stringify(retryError, null, 2)
-          : String(retryError);
-        return {
-          content: [{ type: "text", text: `Error after retry: ${errorMessage}` }],
-          isError: true,
-        };
-      }
-    }
-
-    let errorMessage: string;
-    if (error instanceof Error) {
-      errorMessage = error.message;
-    } else if (typeof error === 'object' && error !== null) {
-      // node-quickbooks often returns error objects with Fault property
-      errorMessage = JSON.stringify(error, null, 2);
-    } else {
-      errorMessage = String(error);
-    }
-
-    const tid = getLastIntuitTid();
-    const tidInfo = tid ? `\n\nintuit_tid: ${tid}` : '';
+  if (outcome.retryBlockedByWrite) {
+    rejectClient(attemptedClient);
+    // The one failure a caller must not simply repeat: QuickBooks refused the
+    // credentials on a call that had already sent a write, so from here there is
+    // no way to know whether it landed. Retrying blind is how a bill gets booked
+    // twice.
     return {
-      content: [{ type: "text", text: `Error: ${errorMessage}${tidInfo}\n\nFor support, visit: https://github.com/nialloulton/quickbooks-mcp/issues` }],
+      content: [{
+        type: "text",
+        text: [
+          `Authentication error: ${detail}`,
+          "",
+          "This call had already sent a write to QuickBooks, so it was not retried automatically.",
+          "Check in QuickBooks whether the transaction was recorded before running it again.",
+        ].join("\n"),
+      }],
       isError: true,
     };
   }
+
+  return {
+    content: [{ type: "text", text: `${outcome.retried ? "Error after retry" : "Error"}: ${detail}` }],
+    isError: true,
+  };
+}
+
+export async function executeTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  return withLogContext(async () => {
+    try {
+      const result = await executeToolInContext(name, args);
+      if (result.isError) {
+        return { ...result, content: result.content.map(item => ({ ...item, text: redactText(item.text) })) };
+      }
+      return result;
+    } catch (error) {
+      throw new Error(formatQboError(error));
+    }
+  });
 }

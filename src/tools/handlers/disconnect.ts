@@ -2,7 +2,7 @@
 
 import { isLocalMode, getCredentialMode } from "../../credentials/index.js";
 import { LocalCredentialProvider } from "../../credentials/local-provider.js";
-import { revokeToken } from "../../credentials/oauth-client.js";
+import { revokeToken, clearPendingAuthorization } from "../../credentials/oauth-client.js";
 import { clearCredentialsCache } from "../../client/index.js";
 
 type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
@@ -25,6 +25,8 @@ export async function handleDisconnect(): Promise<ToolResult> {
     };
   }
 
+  clearPendingAuthorization();
+  clearCredentialsCache();
   const localProvider = new LocalCredentialProvider();
 
   // Check if we have credentials to revoke

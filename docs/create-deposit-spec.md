@@ -6,10 +6,10 @@ Add a `create_deposit` MCP tool that creates bank deposit transactions in QuickB
 
 ## Motivation
 
-Deposits are manually created during reconciliation workflows when recording how money arrives in a bank account. The typical use case is recording third-party payment processor deposits (Square, DoorDash, UberEats) where a gross amount arrives in the bank, broken into income/asset lines and fee deductions.
+Deposits are manually created during reconciliation workflows when recording how money arrives in a bank account. The typical use case is recording third-party payment processor deposits where a gross amount arrives in the bank, broken into income/asset lines and fee deductions.
 
-**Example conversation:**
-> "Create a Square deposit for store 20407 on 2025-07-14 to PLAT BUS CHECKING. Total $658.98 broken into: House Account $1101.00 (total sales), House Account -$417.00 (cash sales), Bank Service Charges -$25.02 from Square Inc."
+**Fictional example**
+> "Preview a deposit from Example Processor for Example North on 2025-04-01 to Example Operating Bank. The $85.00 deposit comprises $100.00 of sales, less $10.00 already received in cash and a $5.00 processing fee."
 
 ## QuickBooks API Reference
 
@@ -50,7 +50,7 @@ Deposits are manually created during reconciliation workflows when recording how
 - `TotalAmt` is **computed by QuickBooks** as the sum of all line amounts. Do not send it.
 - Line amounts can be negative (bank fees, cash already collected, etc.).
 - The QB API will reject the request if `DepositToAccountRef` points to a non-Bank account type.
-- `Entity` on lines is optional and references the vendor/customer associated with that line item (e.g., Square Inc. for a processing fee line).
+- `Entity` on lines is optional and references the vendor/customer associated with that line item (e.g., Example Processor for a processing fee line).
 
 ## Tool Definition
 
@@ -62,10 +62,10 @@ Deposits are manually created during reconciliation workflows when recording how
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `deposit_to_account` | string | **Yes** | Bank account name or number (e.g., `"PLAT BUS CHECKING"`, `"5752"`). Resolved via account cache. |
+| `deposit_to_account` | string | **Yes** | Bank account name or number (e.g., `"Example Operating Bank"`, `"1000"`). Resolved via account cache. |
 | `txn_date` | string | **Yes** | Transaction date in YYYY-MM-DD format. |
 | `lines` | array | **Yes** | At least one line item (see Line Parameters below). |
-| `department_name` | string | No | Header-level department/location name (e.g., `"20407"`, `"Cotati"`). Resolved via department cache. |
+| `department_name` | string | No | Header-level department/location name (e.g., `"Example North"`, `"Example South"`). Resolved via department cache. |
 | `department_id` | string | No | Header-level department ID (use if known, otherwise use `department_name`). |
 | `memo` | string | No | Private memo for the deposit. |
 | `draft` | boolean | No | If `true` (default), validate and show preview without creating. Set `false` to create. |
@@ -77,11 +77,12 @@ Each line in the `lines` array:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `amount` | number | **Yes** | Line amount. Can be positive or negative. |
-| `account_name` | string | **Yes*** | Source account name or number (e.g., `"House Account"`, `"1340"`, `"6210"`). Resolved via account cache. |
+| `account_name` | string | **Yes*** | Source account name or number (e.g., `"Example Clearing"`, `"1100"`, `"6000"`). Resolved via account cache. |
 | `account_id` | string | **Yes*** | Account ID (use if known, otherwise use `account_name`). |
 | `description` | string | No | Line description text. |
-| `entity_name` | string | No | Vendor or customer name (e.g., `"Square Inc."`). Resolved via vendor cache. Sets `DepositLineDetail.Entity`. |
+| `entity_name` | string | No | Vendor, customer, or employee name. Sets `DepositLineDetail.Entity`. |
 | `entity_id` | string | No | Entity ID (use if known, otherwise use `entity_name`). |
+| `entity_type` | string | No | `Vendor` (default), `Customer`, or `Employee` — which name list to search. |
 
 \* One of `account_name` or `account_id` is required per line.
 
@@ -108,7 +109,7 @@ Follow the `handleCreateBill` pattern:
 5. For each line:
    a. Resolve account_name/id → AccountRef (account cache)
    b. Validate amount with validateAmount() (handles negatives)
-   c. If entity_name/id provided → resolve to Entity ref (vendor cache)
+   c. If entity_name/id provided → resolve to Entity ref against the list named by entity_type
 6. Build QB deposit object
 7. If draft: format preview and return
 8. Call client.createDeposit(object, callback)
@@ -120,17 +121,17 @@ Follow the `handleCreateBill` pattern:
 ```
 DRAFT - Deposit Preview
 
-Date: 2025-07-14
-Deposit To: PLAT BUS CHECKING (5752)
-Department: 20407
+Date: 2025-04-01
+Deposit To: Example Operating Bank (1000)
+Department: Example North
 Memo: (none)
 
 Lines:
-  1340 House Account: $1101.00 "total sales"
-  1340 House Account: $-417.00 "cash sales"
-  6210 Bank Service Charges: $-25.02 [Square Inc.] "SQ250714"
+  1100 Example Clearing: $100.00 "total sales"
+  1100 Example Clearing: $-10.00 "cash sales"
+  6000 Processing Fees: $-5.00 [Example Processor] "EXAMPLE-FEE"
   ─────────────
-  Total: $658.98
+  Total: $85.00
 
 Set draft=false to create this deposit.
 ```
@@ -140,13 +141,13 @@ Set draft=false to create this deposit.
 ```
 Deposit Created!
 
-ID: 51500
-Date: 2025-07-14
-Deposit To: PLAT BUS CHECKING (5752)
-Department: 20407
-Total: $658.98
+ID: 71
+Date: 2025-04-01
+Deposit To: Example Operating Bank (1000)
+Department: Example North
+Total: $85.00
 
-View in QuickBooks: https://app.qbo.intuit.com/app/deposit?txnId=51500
+View in QuickBooks: https://example.invalid/app/deposit?txnId=71
 ```
 
 ### QB Object Structure
@@ -155,34 +156,34 @@ The object sent to `client.createDeposit()`:
 
 ```json
 {
-  "DepositToAccountRef": { "value": "56", "name": "PLAT BUS CHECKING (5752)" },
-  "TxnDate": "2025-07-14",
-  "DepartmentRef": { "value": "6", "name": "20407" },
+  "DepositToAccountRef": { "value": "10", "name": "Example Operating Bank (1000)" },
+  "TxnDate": "2025-04-01",
+  "DepartmentRef": { "value": "14", "name": "Example North" },
   "PrivateNote": "optional memo",
   "Line": [
     {
-      "Amount": 1101.00,
+      "Amount": 100.00,
       "DetailType": "DepositLineDetail",
       "Description": "total sales",
       "DepositLineDetail": {
-        "AccountRef": { "value": "121", "name": "1340 Other Current Assets:House Account" }
+        "AccountRef": { "value": "11", "name": "1100 Other Current Assets:Example Clearing" }
       }
     },
     {
-      "Amount": -417.00,
+      "Amount": -10.00,
       "DetailType": "DepositLineDetail",
       "Description": "cash sales",
       "DepositLineDetail": {
-        "AccountRef": { "value": "121", "name": "1340 Other Current Assets:House Account" }
+        "AccountRef": { "value": "11", "name": "1100 Other Current Assets:Example Clearing" }
       }
     },
     {
-      "Amount": -25.02,
+      "Amount": -5.00,
       "DetailType": "DepositLineDetail",
-      "Description": "SQ250714",
+      "Description": "EXAMPLE-FEE",
       "DepositLineDetail": {
-        "AccountRef": { "value": "9", "name": "6210 Bank Service Charges" },
-        "Entity": { "value": "196", "name": "Square Inc.", "type": "VENDOR" }
+        "AccountRef": { "value": "12", "name": "6000 Processing Fees" },
+        "Entity": { "value": "13", "name": "Example Processor", "type": "VENDOR" }
       }
     }
   ]
@@ -204,17 +205,24 @@ The object sent to `client.createDeposit()`:
 ## Entity Resolution on Lines
 
 The `Entity` field on deposit lines associates a vendor or customer with the line. This is used for:
-- Bank fee lines tied to a specific processor (Square Inc., Stripe, etc.)
+- Bank fee lines tied to a specific processor (Example Processor)
 - Vendor credit deposits
 - Customer payment deposits
 
-Resolution uses the existing vendor cache (same as `create_bill`):
+Resolution goes through `src/client/entity-refs.ts`, which applies the same
+precedence to each name list:
 1. Try exact ID match
 2. Try exact name match (case-insensitive)
 3. Try partial DisplayName match
 4. Throw if not found
 
-The Entity `type` defaults to `"VENDOR"` for vendor cache matches. If customer entity support is needed later, a `entity_type` parameter can be added.
+**Superseded:** this spec originally shipped vendor-only lines and deferred an
+`entity_type` parameter. It now exists on both `create_deposit` and
+`edit_deposit` and takes `Vendor` (default), `Customer`, or `Employee`; the
+resolved kind is uppercased into the `type` attribute QBO round-trips on a
+deposit line. `edit_deposit` accepts the same triple on new and existing lines,
+and a line addressed by `line_id` keeps its existing `Entity` when none is
+given.
 
 ## Edge Cases
 
@@ -224,7 +232,7 @@ The Entity `type` defaults to `"VENDOR"` for vendor cache matches. If customer e
 | Zero total | Valid — all lines could cancel out. QB computes TotalAmt = 0. |
 | Single line | Valid — simple deposit with one source. |
 | Very long descriptions | QB API truncates or rejects at ~4000 chars. Let API handle. |
-| Duplicate account on multiple lines | Valid — same account can appear multiple times (e.g., House Account for gross and cash deduction). |
+| Duplicate account on multiple lines | Valid — same account can appear multiple times (e.g., Example Clearing for gross and cash deduction). |
 | Entity on create | The QB API accepts Entity on DepositLineDetail during create. If this fails in practice, the parameter can be made no-op with a warning. |
 
 ## Testing
@@ -235,7 +243,7 @@ The Entity `type` defaults to `"VENDOR"` for vendor cache matches. If customer e
 2. **Multi-line with fees** — Positive income lines + negative fee line with entity
 3. **Draft preview** — Verify preview formatting before creation
 4. **Name resolution** — Use account numbers, partial names, department names
-5. **Negative amount** — Verify `validateAmount()` handles -$25.02 correctly
+5. **Negative amount** — Verify `validateAmount()` handles -$5.00 correctly
 6. **Entity on line** — Create deposit with vendor entity on fee line
 7. **Verify in QBO UI** — After creation, open the QBO link and confirm all fields match
 

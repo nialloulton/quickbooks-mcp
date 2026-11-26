@@ -79,3 +79,12 @@ export function validateBalance(debitsCents: number, creditsCents: number): void
 export function formatDollars(cents: number): string {
   return toDollars(cents).toFixed(2);
 }
+
+/** Use the transaction's ISO code, including for currencies with other minor units. */
+export function formatCurrencyAmount(amount: number, currency?: string): string {
+  if (currency && /^[A-Z]{3}$/.test(currency)) {
+    return new Intl.NumberFormat("en-GB", { style: "currency", currency, currencyDisplay: "code" })
+      .format(amount).replace(/\u00a0/g, " ");
+  }
+  return amount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+}

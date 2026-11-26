@@ -8,6 +8,7 @@ export interface QBCredentials {
   client_secret: string;
   redirect_url: string;
   access_token: string;
+  access_token_expires_at?: number; // Unix time in milliseconds, absent on older profiles
   refresh_token: string;
   company_id?: string; // Stored in credentials for local mode
 }

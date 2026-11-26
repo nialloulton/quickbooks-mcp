@@ -1,0 +1,33 @@
+name: Windows desktop CI
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-desktop-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: Windows desktop
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm audit
+      - run: npm run build
+      - run: npm run test:desktop
+        if: github.event_name == 'pull_request'
+      - run: npm test
+        if: github.event_name == 'workflow_dispatch'
+      - run: node scripts/smoke-mcp.mjs
+      - run: npm run eval:discovery
+      - run: npm run build:lambda
+        if: github.event_name == 'workflow_dispatch'
+      - run: npm pack --dry-run
+        if: github.event_name == 'workflow_dispatch'

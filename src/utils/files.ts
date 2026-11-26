@@ -1,8 +1,16 @@
 // File utilities for report output
 
 import { writeFileSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import tmp from "tmp";
+import { randomUUID } from "node:crypto";
+
+export function writeInvoicePdf(id: string, pdf: Buffer): string {
+  const dir = process.env.QBO_PDF_OUTPUT_DIR || getReportsDir();
+  const path = resolve(dir, `invoice-${id}-${randomUUID()}.pdf`);
+  writeFileSync(path, pdf, { flag: "wx", mode: 0o600 });
+  return path;
+}
 
 // Enable automatic cleanup on process exit
 tmp.setGracefulCleanup();
